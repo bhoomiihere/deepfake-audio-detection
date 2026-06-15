@@ -1,10 +1,10 @@
-# 🎙️ Deepfake Audio Detection
+# Deepfake Audio Detection
 
 Binary classification system to detect **Genuine (Human)** vs **Deepfake (AI-Generated)** speech using deep learning on MFCC audio features.
 
 ---
 
-## 📊 Performance (on Fake-or-Real Dataset)
+## Performance (on Fake-or-Real Dataset)
 
 | Metric | Result | Threshold | Status |
 |---|---|---|---|
@@ -16,7 +16,7 @@ Binary classification system to detect **Genuine (Human)** vs **Deepfake (AI-Gen
 
 ---
 
-## 🏗️ Architecture & Methodology
+## Architecture & Methodology
 
 ### Preprocessing Pipeline
 ```
@@ -61,7 +61,7 @@ Input: (40, 250, 1)  ← MFCC treated as a 2D image
 
 ---
 
-## 📁 Project Structure
+##  Project Structure
 
 ```
 deepfake-audio-detection/
@@ -76,7 +76,7 @@ deepfake-audio-detection/
 
 ---
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Step 1 — Train the model in Google Colab
 
@@ -115,7 +115,7 @@ streamlit run app.py
 
 ---
 
-## 🌐 Streamlit Deployment (Hosted App)
+##  Streamlit Deployment (Hosted App)
 
 1. Push entire project to GitHub (including `.h5` and `model_config.json`)
    - If model is >100MB: use Git LFS → `git lfs track "*.h5"`
@@ -126,7 +126,7 @@ streamlit run app.py
 
 ---
 
-## 📦 Dataset
+##  Dataset
 
 **Fake-or-Real (FoR) Dataset**  
 - Source: [Kaggle](https://www.kaggle.com/datasets/mohammedabdeldayem/the-fake-or-real-dataset)  
@@ -137,7 +137,7 @@ streamlit run app.py
 
 ---
 
-## 📈 Evaluation Metrics Explained
+##  Evaluation Metrics Explained
 
 | Metric | Description |
 |---|---|
@@ -149,7 +149,7 @@ streamlit run app.py
 
 ---
 
-## 🛠️ Tech Stack
+##  Tech Stack
 
 | Component | Technology |
 |---|---|
