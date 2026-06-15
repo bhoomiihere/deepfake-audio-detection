@@ -1,0 +1,173 @@
+{
+ "nbformat": 4,
+ "nbformat_minor": 5,
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python",
+   "version": "3.10.0"
+  },
+  "colab": {
+   "provenance": [],
+   "gpuType": "T4"
+  },
+  "accelerator": "GPU"
+ },
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# \ud83c\udf99\ufe0f Deepfake Audio Detection\n### Binary Classification: Genuine (Human) vs Deepfake (AI-Generated)\n\n**Tech Stack:** Python \u00b7 Librosa \u00b7 TensorFlow/Keras \u00b7 Scikit-learn  \n**Dataset:** [Fake-or-Real Dataset](https://www.kaggle.com/datasets/mohammedabdeldayem/the-fake-or-real-dataset)  \n**Model:** CNN on MFCC features  \n**Target Metrics:** Accuracy \u2265 80%, EER \u2264 12%, F1 \u2265 80%\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 0: Install dependencies (run once in Colab)\n!pip install -q librosa scikit-learn tensorflow matplotlib seaborn scipy soundfile\nprint(\"\u2705 All dependencies installed\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 1: Imports & Setup\nimport os, json, warnings\nimport numpy as np\nimport pandas as pd\nimport librosa\nimport librosa.display\nimport matplotlib.pyplot as plt\nimport seaborn as sns\nfrom pathlib import Path\nfrom tqdm.notebook import tqdm\n\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.metrics import (classification_report, confusion_matrix,\n                             f1_score, accuracy_score, roc_curve)\nfrom scipy.optimize import brentq\nfrom scipy.interpolate import interp1d\n\nimport tensorflow as tf\nfrom tensorflow.keras import layers, models, callbacks, regularizers\n\nwarnings.filterwarnings('ignore')\nnp.random.seed(42)\ntf.random.set_seed(42)\n\nprint(f\"TensorFlow : {tf.__version__}\")\nprint(f\"GPU        : {tf.config.list_physical_devices('GPU')}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 2: Configuration\n# Audio settings\nSAMPLE_RATE  = 16000   # Hz\nDURATION     = 4       # seconds per clip\nN_MFCC       = 40      # MFCC coefficients\nN_FFT        = 1024\nHOP_LENGTH   = 256\nMAX_FRAMES   = int(SAMPLE_RATE * DURATION / HOP_LENGTH)  # ~250 frames\n\n# Training settings\nBATCH_SIZE   = 32\nEPOCHS       = 60\nLEARNING_RATE = 0.0005\n\nprint(f\"Max frames per clip : {MAX_FRAMES}\")\nprint(f\"Input shape         : ({N_MFCC}, {MAX_FRAMES}, 1)\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 3: Download Dataset from Kaggle (Colab)\n# Option A \u2014 Using Kaggle API (paste your kaggle.json credentials)\n# from google.colab import files\n# files.upload()  # upload your kaggle.json\n# !mkdir -p ~/.kaggle && cp kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json\n# !kaggle datasets download -d mohammedabdeldayem/the-fake-or-real-dataset\n# !unzip -q the-fake-or-real-dataset.zip -d ./data\n\n# Option B \u2014 Upload manually to Colab and set DATA_DIR below\n# Structure expected:\n#   data/\n#     for-norm/          \u2190 use the LA norm folder\n#       training/\n#         real/          \u2190 genuine human speech (.wav)\n#         fake/          \u2190 AI-generated deepfake speech (.wav)\n#       testing/\n#         real/\n#         fake/\n\nDATA_TRAIN = './data/for-norm/training'   # \u2190 adjust if needed\nDATA_TEST  = './data/for-norm/testing'    # \u2190 adjust if needed\n\n# Verify folders exist\nfor d in [DATA_TRAIN, DATA_TEST]:\n    p = Path(d)\n    if p.exists():\n        real_count = len(list((p/'real').glob('*.wav'))) if (p/'real').exists() else 0\n        fake_count = len(list((p/'fake').glob('*.wav'))) if (p/'fake').exists() else 0\n        print(f\"{d}: real={real_count}, fake={fake_count}\")\n    else:\n        print(f\"\u26a0\ufe0f  NOT FOUND: {d}  \u2014 update DATA_TRAIN/DATA_TEST paths above\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 4: Load File Paths & Labels\ndef load_paths(folder):\n    files, labels = [], []\n    folder = Path(folder)\n    for label_name, label_val in [('real', 0), ('fake', 1)]:\n        subfolder = folder / label_name\n        if not subfolder.exists():\n            print(f\"  \u26a0\ufe0f  {subfolder} not found, skipping\")\n            continue\n        for ext in ['*.wav', '*.flac', '*.mp3']:\n            for f in subfolder.glob(ext):\n                files.append(str(f))\n                labels.append(label_val)\n    return files, labels\n\ntrain_files, train_labels = load_paths(DATA_TRAIN)\ntest_files,  test_labels  = load_paths(DATA_TEST)\n\nprint(f\"Training   \u2192 total: {len(train_files)}  genuine: {train_labels.count(0)}  deepfake: {train_labels.count(1)}\")\nprint(f\"Testing    \u2192 total: {len(test_files)}   genuine: {test_labels.count(0)}   deepfake: {test_labels.count(1)}\")\n\n# Class balance check\nfig, ax = plt.subplots(1, 2, figsize=(10, 3))\nfor i, (labels, title) in enumerate([(train_labels, 'Train'), (test_labels, 'Test')]):\n    counts = [labels.count(0), labels.count(1)]\n    ax[i].bar(['Genuine', 'Deepfake'], counts, color=['steelblue', 'salmon'])\n    ax[i].set_title(f'{title} Set Class Distribution')\n    ax[i].set_ylabel('Count')\n    for j, v in enumerate(counts):\n        ax[i].text(j, v + 5, str(v), ha='center')\nplt.tight_layout()\nplt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 5: Visualize Sample Audio\ndef visualize_audio(file_path, title=\"Sample\"):\n    audio, sr = librosa.load(file_path, sr=SAMPLE_RATE, duration=DURATION)\n    mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=N_MFCC, n_fft=N_FFT, hop_length=HOP_LENGTH)\n    mel  = librosa.feature.melspectrogram(y=audio, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH)\n    \n    fig, axes = plt.subplots(1, 3, figsize=(15, 3))\n    \n    librosa.display.waveshow(audio, sr=sr, ax=axes[0])\n    axes[0].set_title(f'Waveform \u2014 {title}')\n    \n    librosa.display.specshow(librosa.power_to_db(mel, ref=np.max),\n                             sr=sr, hop_length=HOP_LENGTH, ax=axes[1], x_axis='time', y_axis='mel')\n    axes[1].set_title('Mel Spectrogram')\n    \n    librosa.display.specshow(mfcc, sr=sr, hop_length=HOP_LENGTH, ax=axes[2], x_axis='time')\n    axes[2].set_title(f'MFCC ({N_MFCC} coefficients)')\n    \n    plt.tight_layout()\n    plt.show()\n\nif train_files:\n    # show one genuine and one deepfake\n    genuine_ex = next((f for f, l in zip(train_files, train_labels) if l == 0), None)\n    fake_ex    = next((f for f, l in zip(train_files, train_labels) if l == 1), None)\n    if genuine_ex: visualize_audio(genuine_ex, \"Genuine (Human)\")\n    if fake_ex:    visualize_audio(fake_ex,    \"Deepfake (AI-Generated)\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 6: Feature Extraction \u2014 MFCC\ndef extract_mfcc(file_path, sr=SAMPLE_RATE, duration=DURATION,\n                 n_mfcc=N_MFCC, n_fft=N_FFT, hop_length=HOP_LENGTH, max_frames=MAX_FRAMES):\n    \"\"\"\n    Load audio \u2192 normalize \u2192 extract MFCC \u2192 pad/truncate to fixed length.\n    Returns: np.ndarray of shape (n_mfcc, max_frames)\n    \"\"\"\n    try:\n        audio, _ = librosa.load(file_path, sr=sr, duration=duration, mono=True)\n        \n        # Ensure fixed length\n        target_samples = sr * duration\n        if len(audio) < target_samples:\n            audio = np.pad(audio, (0, target_samples - len(audio)), mode='constant')\n        else:\n            audio = audio[:target_samples]\n        \n        # Pre-emphasis filter (boosts high frequencies, improves speech clarity)\n        audio = np.append(audio[0], audio[1:] - 0.97 * audio[:-1])\n        \n        # MFCC extraction\n        mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=n_mfcc, n_fft=n_fft, hop_length=hop_length)\n        \n        # Z-score normalization per clip\n        mfcc = (mfcc - mfcc.mean()) / (mfcc.std() + 1e-8)\n        \n        # Pad or trim time axis\n        if mfcc.shape[1] < max_frames:\n            mfcc = np.pad(mfcc, ((0, 0), (0, max_frames - mfcc.shape[1])), mode='constant')\n        else:\n            mfcc = mfcc[:, :max_frames]\n        \n        return mfcc.astype(np.float32)\n    \n    except Exception as e:\n        print(f\"  \u26a0\ufe0f  Error: {file_path}: {e}\")\n        return np.zeros((n_mfcc, max_frames), dtype=np.float32)\n\n\ndef extract_all(file_list, desc=\"Extracting\"):\n    features = []\n    for f in tqdm(file_list, desc=desc):\n        features.append(extract_mfcc(f))\n    return np.array(features)\n\n\nprint(\"Extracting training features...\")\nX_train_raw = extract_all(train_files, \"Training\")\nprint(\"Extracting test features...\")\nX_test_raw  = extract_all(test_files,  \"Testing\")\n\ny_train = np.array(train_labels)\ny_test  = np.array(test_labels)\n\nprint(f\"\\nX_train shape: {X_train_raw.shape}\")\nprint(f\"X_test  shape: {X_test_raw.shape}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 7: Prepare Data for CNN\n# Split train \u2192 train + validation (80/20)\nX_tr, X_val, y_tr, y_val = train_test_split(\n    X_train_raw, y_train, test_size=0.2, random_state=42, stratify=y_train\n)\n\n# Add channel dimension \u2192 (N, n_mfcc, max_frames, 1)\nX_tr_cnn  = X_tr[..., np.newaxis]\nX_val_cnn = X_val[..., np.newaxis]\nX_te_cnn  = X_test_raw[..., np.newaxis]\n\nprint(f\"Train   : {X_tr_cnn.shape}  labels: {y_tr.shape}\")\nprint(f\"Val     : {X_val_cnn.shape}  labels: {y_val.shape}\")\nprint(f\"Test    : {X_te_cnn.shape}  labels: {y_test.shape}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 8: CNN Model Architecture\ndef build_cnn(input_shape):\n    \"\"\"\n    2D CNN on MFCC features for binary classification.\n    \n    Architecture:\n      3 convolutional blocks (Conv2D \u2192 BN \u2192 MaxPool \u2192 Dropout)\n      \u2192 GlobalAvgPool\n      \u2192 Dense classifier\n    \n    Input  : (n_mfcc, max_frames, 1)\n    Output : sigmoid probability (0=Genuine, 1=Deepfake)\n    \"\"\"\n    inp = layers.Input(shape=input_shape)\n    \n    # Block 1 \u2014 low-level features\n    x = layers.Conv2D(32, (3, 3), padding='same', activation='relu')(inp)\n    x = layers.BatchNormalization()(x)\n    x = layers.Conv2D(32, (3, 3), padding='same', activation='relu')(x)\n    x = layers.BatchNormalization()(x)\n    x = layers.MaxPooling2D((2, 2))(x)\n    x = layers.Dropout(0.2)(x)\n    \n    # Block 2 \u2014 mid-level features\n    x = layers.Conv2D(64, (3, 3), padding='same', activation='relu')(x)\n    x = layers.BatchNormalization()(x)\n    x = layers.Conv2D(64, (3, 3), padding='same', activation='relu')(x)\n    x = layers.BatchNormalization()(x)\n    x = layers.MaxPooling2D((2, 2))(x)\n    x = layers.Dropout(0.25)(x)\n    \n    # Block 3 \u2014 high-level features\n    x = layers.Conv2D(128, (3, 3), padding='same', activation='relu')(x)\n    x = layers.BatchNormalization()(x)\n    x = layers.Conv2D(128, (3, 3), padding='same', activation='relu')(x)\n    x = layers.BatchNormalization()(x)\n    x = layers.MaxPooling2D((2, 2))(x)\n    x = layers.Dropout(0.3)(x)\n    \n    # Global pooling \u2192 removes spatial dims\n    x = layers.GlobalAveragePooling2D()(x)\n    \n    # Dense classifier\n    x = layers.Dense(256, activation='relu',\n                     kernel_regularizer=regularizers.l2(1e-4))(x)\n    x = layers.Dropout(0.5)(x)\n    x = layers.Dense(64, activation='relu')(x)\n    x = layers.Dropout(0.3)(x)\n    out = layers.Dense(1, activation='sigmoid')(x)\n    \n    model = models.Model(inp, out)\n    model.compile(\n        optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE),\n        loss='binary_crossentropy',\n        metrics=['accuracy',\n                 tf.keras.metrics.AUC(name='auc'),\n                 tf.keras.metrics.Precision(name='precision'),\n                 tf.keras.metrics.Recall(name='recall')]\n    )\n    return model\n\ninput_shape = X_tr_cnn.shape[1:]\nmodel = build_cnn(input_shape)\nmodel.summary()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 9: Train the Model\ncb_list = [\n    callbacks.EarlyStopping(\n        monitor='val_accuracy', patience=12, restore_best_weights=True, verbose=1\n    ),\n    callbacks.ReduceLROnPlateau(\n        monitor='val_loss', factor=0.5, patience=6, min_lr=1e-6, verbose=1\n    ),\n    callbacks.ModelCheckpoint(\n        'best_model.keras', save_best_only=True, monitor='val_accuracy', verbose=0\n    ),\n]\n\n# Class weights to handle imbalance (if any)\nunique, counts = np.unique(y_tr, return_counts=True)\ntotal = len(y_tr)\nclass_weight = {int(c): total / (len(unique) * n) for c, n in zip(unique, counts)}\nprint(f\"Class weights: {class_weight}\")\n\nhistory = model.fit(\n    X_tr_cnn, y_tr,\n    validation_data=(X_val_cnn, y_val),\n    epochs=EPOCHS,\n    batch_size=BATCH_SIZE,\n    class_weight=class_weight,\n    callbacks=cb_list,\n    verbose=1,\n)\n\nprint(f\"\\nBest val accuracy: {max(history.history['val_accuracy']):.4f}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 10: Training Curves\nfig, axes = plt.subplots(1, 3, figsize=(15, 4))\n\naxes[0].plot(history.history['accuracy'],     label='Train', linewidth=2)\naxes[0].plot(history.history['val_accuracy'], label='Val',   linewidth=2)\naxes[0].set_title('Accuracy'); axes[0].set_xlabel('Epoch'); axes[0].legend(); axes[0].grid(True, alpha=0.3)\n\naxes[1].plot(history.history['loss'],     label='Train', linewidth=2, color='orange')\naxes[1].plot(history.history['val_loss'], label='Val',   linewidth=2, color='red')\naxes[1].set_title('Loss'); axes[1].set_xlabel('Epoch'); axes[1].legend(); axes[1].grid(True, alpha=0.3)\n\naxes[2].plot(history.history['auc'],     label='Train AUC', linewidth=2, color='green')\naxes[2].plot(history.history['val_auc'], label='Val AUC',   linewidth=2, color='darkgreen')\naxes[2].set_title('AUC-ROC'); axes[2].set_xlabel('Epoch'); axes[2].legend(); axes[2].grid(True, alpha=0.3)\n\nplt.suptitle('Training History', fontsize=14, fontweight='bold')\nplt.tight_layout()\nplt.savefig('training_history.png', dpi=150, bbox_inches='tight')\nplt.show()\nprint(\"Saved: training_history.png\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 11: Evaluation on Test Set\ndef compute_eer(y_true, y_scores):\n    \"\"\"\n    Equal Error Rate: threshold where FAR == FRR.\n    Lower EER = better balanced detector.\n    \"\"\"\n    fpr, tpr, thresholds = roc_curve(y_true, y_scores, pos_label=1)\n    fnr = 1 - tpr\n    abs_diff = np.abs(fnr - fpr)\n    eer_idx = np.argmin(abs_diff)\n    eer = (fpr[eer_idx] + fnr[eer_idx]) / 2\n    return float(eer), float(thresholds[eer_idx])\n\n# Predictions on test set\ny_prob = model.predict(X_te_cnn, verbose=0).flatten()\ny_pred = (y_prob > 0.5).astype(int)\n\n# Core metrics\nacc  = accuracy_score(y_test, y_pred)\nf1   = f1_score(y_test, y_pred)\neer, eer_thresh = compute_eer(y_test, y_prob)\ncm   = confusion_matrix(y_test, y_pred)\n\n# Per-class accuracy\ngenuine_acc  = cm[0, 0] / cm[0].sum()\ndeepfake_acc = cm[1, 1] / cm[1].sum()\n\nprint(\"=\" * 55)\nprint(\"         PERFORMANCE REPORT\")\nprint(\"=\" * 55)\nprint(f\"  Overall Accuracy   : {acc*100:.2f}%   (threshold \u2265 80%) {'\u2705' if acc >= 0.80 else '\u274c'}\")\nprint(f\"  Equal Error Rate   : {eer*100:.2f}%   (threshold \u2264 12%) {'\u2705' if eer <= 0.12 else '\u274c'}\")\nprint(f\"  F1 Score           : {f1*100:.2f}%   (threshold \u2265 80%) {'\u2705' if f1 >= 0.80 else '\u274c'}\")\nprint(f\"  Genuine  Accuracy  : {genuine_acc*100:.2f}%  (threshold \u2265 75%) {'\u2705' if genuine_acc >= 0.75 else '\u274c'}\")\nprint(f\"  Deepfake Accuracy  : {deepfake_acc*100:.2f}%  (threshold \u2265 75%) {'\u2705' if deepfake_acc >= 0.75 else '\u274c'}\")\nprint(\"=\" * 55)\nprint()\nprint(classification_report(y_test, y_pred, target_names=['Genuine', 'Deepfake']))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 12: Confusion Matrix\nfig, axes = plt.subplots(1, 2, figsize=(14, 5))\n\n# Raw counts\nsns.heatmap(cm, annot=True, fmt='d', cmap='Blues',\n            xticklabels=['Genuine', 'Deepfake'],\n            yticklabels=['Genuine', 'Deepfake'],\n            ax=axes[0], linewidths=1, linecolor='white')\naxes[0].set_title('Confusion Matrix (Counts)', fontsize=13, fontweight='bold')\naxes[0].set_ylabel('Actual'); axes[0].set_xlabel('Predicted')\n\n# Normalized\ncm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)\nsns.heatmap(cm_norm, annot=True, fmt='.2%', cmap='Greens',\n            xticklabels=['Genuine', 'Deepfake'],\n            yticklabels=['Genuine', 'Deepfake'],\n            ax=axes[1], linewidths=1, linecolor='white')\naxes[1].set_title('Confusion Matrix (Normalized)', fontsize=13, fontweight='bold')\naxes[1].set_ylabel('Actual'); axes[1].set_xlabel('Predicted')\n\nplt.suptitle('Model Evaluation \u2014 Confusion Matrix', fontsize=14)\nplt.tight_layout()\nplt.savefig('confusion_matrix.png', dpi=150, bbox_inches='tight')\nplt.show()\nprint(\"Saved: confusion_matrix.png\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 13: ROC Curve & AUC\nfrom sklearn.metrics import roc_auc_score\n\nfpr, tpr, _ = roc_curve(y_test, y_prob)\nauc_score   = roc_auc_score(y_test, y_prob)\n\nplt.figure(figsize=(7, 5))\nplt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC Curve (AUC = {auc_score:.4f})')\nplt.plot([0, 1], [0, 1], 'k--', lw=1, label='Random Baseline')\nplt.scatter([eer], [1 - eer], color='red', s=100, zorder=5, label=f'EER = {eer*100:.2f}%')\nplt.xlabel('False Positive Rate'); plt.ylabel('True Positive Rate')\nplt.title('ROC Curve \u2014 Deepfake Audio Detection')\nplt.legend(); plt.grid(True, alpha=0.3)\nplt.tight_layout()\nplt.savefig('roc_curve.png', dpi=150, bbox_inches='tight')\nplt.show()\nprint(f\"AUC-ROC: {auc_score:.4f}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 14: Save Model & Config\n# Save model\nmodel.save('deepfake_detector.keras')\nmodel.save('deepfake_detector.h5')   # legacy format for compatibility\nprint(\"\u2705 Model saved: deepfake_detector.keras / .h5\")\n\n# Save feature extraction config (needed by predict.py and app.py)\nconfig = {\n    'sample_rate': SAMPLE_RATE,\n    'duration':    DURATION,\n    'n_mfcc':      N_MFCC,\n    'n_fft':       N_FFT,\n    'hop_length':  HOP_LENGTH,\n    'max_frames':  MAX_FRAMES,\n    'metrics': {\n        'accuracy':     round(float(acc), 4),\n        'f1_score':     round(float(f1),  4),\n        'eer':          round(float(eer), 4),\n        'genuine_acc':  round(float(genuine_acc),  4),\n        'deepfake_acc': round(float(deepfake_acc), 4),\n    }\n}\nwith open('model_config.json', 'w') as f:\n    json.dump(config, f, indent=2)\nprint(\"\u2705 Config saved: model_config.json\")\n\nprint(\"\\n\ud83d\udccb Final Summary:\")\nprint(json.dumps(config['metrics'], indent=2))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# \u2500\u2500 Step 15: Quick Inference Test\ndef predict_audio(file_path, model, config):\n    \"\"\"Predict a single audio file.\"\"\"\n    mfcc = extract_mfcc(file_path,\n                         sr=config['sample_rate'],\n                         duration=config['duration'],\n                         n_mfcc=config['n_mfcc'],\n                         n_fft=config['n_fft'],\n                         hop_length=config['hop_length'],\n                         max_frames=config['max_frames'])\n    inp  = mfcc[np.newaxis, ..., np.newaxis]\n    prob = float(model.predict(inp, verbose=0)[0][0])\n    label = 'Deepfake (AI-Generated)' if prob > 0.5 else 'Genuine (Human)'\n    conf  = prob if prob > 0.5 else 1 - prob\n    return {'prediction': label, 'confidence': conf, 'deepfake_prob': prob}\n\n# Test on a sample from test set\nif test_files:\n    sample = test_files[0]\n    result = predict_audio(sample, model, config)\n    actual = 'Genuine' if test_labels[0] == 0 else 'Deepfake'\n    print(f\"File       : {Path(sample).name}\")\n    print(f\"Actual     : {actual}\")\n    print(f\"Predicted  : {result['prediction']}\")\n    print(f\"Confidence : {result['confidence']*100:.1f}%\")"
+   ]
+  }
+ ]
+}
